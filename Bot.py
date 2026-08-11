@@ -731,7 +731,7 @@ async def inline_handler(inline_query: InlineQuery):
     if not query or "сайт" in query or "site" in query:
         results.append(
             InlineQueryResultArticle(
-                id="site",
+                id="siite",
                 title="Сайт",
                 description="Сайт",
                 input_message_content=InputTextMessageContent(message_text=SITE_TEXT),
