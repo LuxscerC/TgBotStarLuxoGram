@@ -196,7 +196,7 @@ BOTINFO_INLINE_TEXT = (
 async def cmd_start(message: Message):
     await ensure_user(message.from_user.id, message.from_user.username)
     await message.answer(
-        "👋Приветствую! Это бот-помощник для пользывателей ЛюксоГрама, /guide, "
+        "👋Приветствую! Это бот-помощник для пользователей ЛюксоГрама, /guide, "
         "чтобы получить роль \"верифицированный\", /help для полного списка команд."
     )
 
