@@ -7,11 +7,14 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+BOT_TOKEN = "8958756913:AAGmg1dSvpDxF-5xB0tOimOk_OdeD9kyOeI"
+OWNER_ID = "7090228036"
 SITE_URL = os.environ.get("SITE_URL", "https://starluxogram.site/")
 
-DATA_DIR = Path(__file__).parent / "data"
+try:
+    DATA_DIR = Path(__file__).resolve().parent / "data"
+except NameError:
+    DATA_DIR = Path.cwd() / "data"
 DATA_DIR.mkdir(exist_ok=True)
 THEMES_FILE = DATA_DIR / "themes.json"
 
@@ -78,6 +81,11 @@ class PrefixCommand(BaseFilter):
 router = Router()
 
 SITE_TEXT = f"🖥 Наш сайт: {SITE_URL}"
+
+
+@router.message(PrefixCommand("start"))
+async def cmd_start(message: Message, command: str, args: str):
+    await message.answer("👋Приветствую!\nЭтот бот – перенос сайта «ЛюксоГрам.»")
 
 
 @router.message(PrefixCommand("site", "сайт"))
