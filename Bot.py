@@ -1,48 +1,22 @@
 import asyncio
 import json
 import os
-import random
-import ast
-import operator
 from pathlib import Path
-from typing import Optional
-import urllib.parse
 
-import aiohttp
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineQuery, InlineQueryResultArticle, InputTextMessageContent
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-import logging
-logging.basicConfig(level=logging.INFO)
+from aiogram import Bot, Dispatcher, Router
+from aiogram.filters import BaseFilter
+from aiogram.types import Message
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-AI_MODEL = os.environ.get("AI_MODEL", "openai/gpt-4o-mini")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+SITE_URL = os.environ.get("SITE_URL", "https://starluxogram.site/")
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
-USERS_FILE = DATA_DIR / "users.json"
-CODES_FILE = DATA_DIR / "codes.json"
 THEMES_FILE = DATA_DIR / "themes.json"
 
-RANK_UNVERIFIED = "unverified"
-RANK_VERIFIED = "verified"
-RANK_OWNER = "owner"
-
-RANK_NAMES = {
-    RANK_UNVERIFIED: "Неверифицированный",
-    RANK_VERIFIED: "Верифицированный",
-    RANK_OWNER: "Управляющий",
-}
-
-NO_RIGHTS_TEXT = "Вы не можете выполнить эту команду, так как у вас нет нужного ранга."
-
 storage_lock = asyncio.Lock()
+PREFIXES = ("/", ".", "!")
 
 
 def _read_json(path: Path) -> dict:
@@ -60,26 +34,6 @@ def _write_json(path: Path, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-async def get_users() -> dict:
-    async with storage_lock:
-        return _read_json(USERS_FILE)
-
-
-async def save_users(data: dict) -> None:
-    async with storage_lock:
-        _write_json(USERS_FILE, data)
-
-
-async def get_codes() -> dict:
-    async with storage_lock:
-        return _read_json(CODES_FILE)
-
-
-async def save_codes(data: dict) -> None:
-    async with storage_lock:
-        _write_json(CODES_FILE, data)
-
-
 async def get_themes() -> dict:
     async with storage_lock:
         data = _read_json(THEMES_FILE)
@@ -93,562 +47,56 @@ async def save_themes(data: dict) -> None:
         _write_json(THEMES_FILE, data)
 
 
-async def ensure_user(user_id: int, username: Optional[str]) -> dict:
-    users = await get_users()
-    uid = str(user_id)
-    username = username or ""
-    if uid not in users:
-        users[uid] = {"username": username, "rank": RANK_UNVERIFIED}
-        await save_users(users)
-    elif users[uid].get("username") != username:
-        users[uid]["username"] = username
-        await save_users(users)
-    return users[uid]
+class PrefixCommand(BaseFilter):
+    def __init__(self, *commands: str):
+        self.commands = {c.lower() for c in commands}
 
-
-async def get_rank(user_id: int) -> str:
-    if user_id == OWNER_ID:
-        return RANK_OWNER
-    users = await get_users()
-    uid = str(user_id)
-    if uid not in users:
-        return RANK_UNVERIFIED
-    return users[uid].get("rank", RANK_UNVERIFIED)
-
-
-async def set_rank(user_id: int, rank: str) -> None:
-    users = await get_users()
-    uid = str(user_id)
-    if uid not in users:
-        users[uid] = {"username": "", "rank": rank}
-    else:
-        users[uid]["rank"] = rank
-    await save_users(users)
-
-
-async def find_user_by_username(username: str) -> Optional[tuple]:
-    username = username.lstrip("@").lower()
-    users = await get_users()
-    for uid, info in users.items():
-        if info.get("username", "").lower() == username:
-            return uid, info
-    return None
+    async def __call__(self, message: Message) -> bool | dict:
+        if not message.text:
+            return False
+        text = message.text.strip()
+        if not text:
+            return False
+        prefix = None
+        for p in PREFIXES:
+            if text.startswith(p):
+                prefix = p
+                break
+        if not prefix:
+            return False
+        body = text[len(prefix):].strip()
+        if not body:
+            return False
+        parts = body.split(maxsplit=1)
+        cmd = parts[0].lower().split("@")[0]
+        if cmd not in self.commands:
+            return False
+        args = parts[1] if len(parts) > 1 else ""
+        return {"command": cmd, "args": args}
 
 
 router = Router()
 
-HELP_TEXT = (
-    "📋 Список команд:\n\n"
-    "🔹 Неверифицированный:\n"
-    "/start – запустить бота\n"
-    "/help – список команд\n"
-    "/botinfo – Инфо о боте\n"
-    "/questionnaire – анкета пользователя\n"
-    "/guide – как пройти верификацию\n"
-    "/activate текст – активировать промокод\n\n"
-    "🔹 Верифицированный:\n"
-    "/start – запустить бота\n"
-    "/help – список команд\n"
-    "/activate текст – активировать промокод\n"
-    "/currency – курс валют\n"
-    "/calculator пример – калькулятор\n"
-    "/ai текст – спросить ИИ\n"
-    "/guide – как пройти верификацию\n"
-    "/verifiedchat – ссылка на чат\n"
-    "/questionnaire – анкета пользователя\n"
-    "/chance текст или текст – рандомный выбор\n"
-    "/cubes @юз – бросить кубики\n"
-    "/search текст – поиск в Яндексе\n"
-    "/createtheme название тема – создать тему\n"
-    "/themes – список всех тем\n\n"
-    "🔹 Управляющий:\n"
-    "/passcreate текст @юз – создать промокод для пользователя\n"
-    "/passcreate текст @all – создать глобальный промокод (для всех)\n"
-    "/pickup @юз – забрать верификацию\n"
-    "/removetheme айди – удалить тему\n\n"
-)
+SITE_TEXT = f"🖥 Наш сайт: {SITE_URL}"
 
-GUIDE_TEXT = (
-    "✅ Как пройти верификацию:\n\n"
-    "1) Напишите мне в лс (@Luxscer).\n\n"
-    "2) Напишите, чем вы занимаетесь, например: если вы программист напишите "
-    "\"Я программист, пишу на языке программирования ... , На библиотеке ... , Мой проект ...\"\n\n"
-    "3) Ждать, если вы подходите, я отвечу вам, и выдам доступ."
-)
 
-BOTINFO_TEXT = (
-    "📄 Язык программирования: Python.\n"
-    "📚 Библиотека: Aiogram.\n"
-    "👨‍💻 Кодер: @Luxscer.\n"
-    "📊 Стадия в разработке: Готов."
-)
+@router.message(PrefixCommand("site", "сайт"))
+async def cmd_site(message: Message, command: str, args: str):
+    await message.answer(SITE_TEXT)
 
-BOTINFO_INLINE_TEXT = (
-    "Информация о боте:\n"
-    "📄 Язык программирования: Python.\n"
-    "📚 Библиотека: Aiogram.\n"
-    "👨‍💻 Кодер: @Luxscer.\n"
-    "📊 Стадия в разработке: Готов."
-)
 
-
-@router.message(Command("start"))
-async def cmd_start(message: Message):
-    await ensure_user(message.from_user.id, message.from_user.username)
-    await message.answer(
-        "👋Приветствую! Это бот-помощник для пользователей ЛюксоГрама, /guide, "
-        "чтобы получить роль \"верифицированный\", /help для полного списка команд. Глобальный промокод: Luxs"
-    )
-
-
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    await ensure_user(message.from_user.id, message.from_user.username)
-    await message.answer(HELP_TEXT)
-
-
-@router.message(Command("questionnaire"))
-async def cmd_questionnaire(message: Message):
-    await ensure_user(message.from_user.id, message.from_user.username)
-    rank = await get_rank(message.from_user.id)
-    username = message.from_user.username or "—"
-    await message.answer(
-        "📊 Анкета:\n"
-        f"👤 Username – @{username}\n"
-        f"🆔 Telegram id – {message.from_user.id}\n"
-        f"💎 Ранг – {RANK_NAMES[rank]}"
-    )
-
-
-@router.message(Command("guide"))
-async def cmd_guide(message: Message):
-    await ensure_user(message.from_user.id, message.from_user.username)
-    await message.answer(GUIDE_TEXT, disable_web_page_preview=True)
-
-
-@router.message(Command("activate"))
-async def cmd_activate(message: Message):
-    await ensure_user(message.from_user.id, message.from_user.username)
-    
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Укажите промокод: /activate текст")
-        return
-    
-    code = parts[1].strip()
-    codes = await get_codes()
-    entry = codes.get(code)
-    
-    if not entry or entry.get("used"):
-        await message.answer("❌ Промокод недействителен.")
-        return
-
-    allowed_username = str(entry.get("username", "")).strip().lower()
-    user_username = (message.from_user.username or "").lower()
-
-    if allowed_username and allowed_username not in ("", "all"):
-        if allowed_username != user_username:
-            await message.answer("❌ Промокод недействителен.")
-            return
-
-    entry["used"] = True
-    codes[code] = entry
-    await save_codes(codes)
-    await set_rank(message.from_user.id, RANK_VERIFIED)
-    await message.answer("✅ Промокод активирован! Вам выдана роль \"Верифицированный\".")
-
-
-FIAT_SYMBOLS = {
-    "RUB": "🇷🇺 Рубль",
-    "USD": "🇺🇸 Доллар",
-    "EUR": "🇪🇺 Евро",
-    "CNY": "🇨🇳 Юань",
-    "BYN": "🇧🇾 Белорусский рубль",
-    "GBP": "🇬🇧 Фунт",
-}
-
-CRYPTO_IDS = {
-    "bitcoin": "Биткоин",
-    "ethereum": "ETH",
-    "solana": "SOLARA",
-    "dogecoin": "DOGE",
-}
-
-
-@router.message(Command("currency"))
-async def cmd_currency(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    lines = ["💱 Курс валют к доллару (USD):\n"]
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                fiat_data = await resp.json()
-            rates = fiat_data.get("rates", {})
-            for code, label in FIAT_SYMBOLS.items():
-                rate = rates.get(code)
-                if rate:
-                    lines.append(f"{label}: {rate:.2f}")
-        except Exception:
-            lines.append("Не удалось получить курсы фиатных валют.")
-
-        try:
-            ids = ",".join(CRYPTO_IDS.keys())
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                crypto_data = await resp.json()
-            lines.append("")
-            for cid, label in CRYPTO_IDS.items():
-                price = crypto_data.get(cid, {}).get("usd")
-                if price:
-                    lines.append(f"{label}: {price:,.2f} $")
-        except Exception:
-            lines.append("Не удалось получить курсы криптовалют.")
-
-    await message.answer("\n".join(lines))
-
-
-ALLOWED_OPERATORS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.Pow: operator.pow,
-    ast.Mod: operator.mod,
-    ast.FloorDiv: operator.floordiv,
-    ast.USub: operator.neg,
-    ast.UAdd: operator.pos,
-}
-
-
-def _eval_node(node):
-    if isinstance(node, ast.Constant):
-        if isinstance(node.value, (int, float)):
-            return node.value
-        raise ValueError("Недопустимое значение")
-    if isinstance(node, ast.BinOp) and type(node.op) in ALLOWED_OPERATORS:
-        return ALLOWED_OPERATORS[type(node.op)](_eval_node(node.left), _eval_node(node.right))
-    if isinstance(node, ast.UnaryOp) and type(node.op) in ALLOWED_OPERATORS:
-        return ALLOWED_OPERATORS[type(node.op)](_eval_node(node.operand))
-    raise ValueError("Недопустимое выражение")
-
-
-def safe_eval(expr: str):
-    node = ast.parse(expr, mode="eval").body
-    return _eval_node(node)
-
-
-@router.message(Command("calculator"))
-async def cmd_calculator(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Укажите пример: /calculator 2+2*2")
-        return
-    try:
-        result = safe_eval(parts[1].strip())
-        await message.answer(f"🧮 Результат: {result}")
-    except Exception:
-        await message.answer("❌ Не удалось решить пример. Проверьте выражение.")
-
-
-async def _ask_openrouter(prompt: str) -> Optional[str]:
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            }
-            payload = {"model": AI_MODEL, "messages": [{"role": "user", "content": prompt}]}
-            async with session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
-    except Exception:
-        return None
-
-
-async def _ask_groq(prompt: str) -> Optional[str]:
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
-            }
-            payload = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
-            async with session.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
-    except Exception:
-        return None
-
-
-@router.message(Command("ai"))
-async def cmd_ai(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Укажите текст запроса: /ai текст")
-        return
-    prompt = parts[1].strip()
-    await message.bot.send_chat_action(message.chat.id, "typing")
-
-    answer = None
-    if OPENROUTER_API_KEY:
-        answer = await _ask_openrouter(prompt)
-    if answer is None and GROQ_API_KEY:
-        answer = await _ask_groq(prompt)
-
-    if answer is None:
-        await message.answer("❌ Не удалось получить ответ от ИИ.")
-    else:
-        await message.answer(answer)
-
-
-@router.message(Command("verifiedchat"))
-async def cmd_verifiedchat(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-    await message.answer("✅ Наш чат – https://t.me/+QoviFPVI_BE1MDUy.", disable_web_page_preview=True)
-
-
-@router.message(Command("chance"))
-async def cmd_chance(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Укажите варианты: /chance месси или роналдо")
-        return
-    text = parts[1].strip()
-    if " или " in text:
-        options = [opt.strip() for opt in text.split(" или ") if opt.strip()]
-    else:
-        options = [opt.strip() for opt in text.split() if opt.strip()]
-    if len(options) < 2:
-        await message.answer("Укажите минимум два варианта через \"или\".")
-        return
-    await message.answer(f"🎯 Выбор: {random.choice(options)}")
-
-
-active_dice_games: dict = {}
-
-
-@router.message(Command("cubes"))
-async def cmd_cubes(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip().startswith("@"):
-        await message.answer("Укажите пользователя: /cubes @username")
-        return
-    target_username = parts[1].strip().lstrip("@")
-    initiator_username = message.from_user.username or str(message.from_user.id)
-
-    if target_username.lower() == initiator_username.lower():
-        await message.answer("❌ Нельзя предложить кубики самому себе.")
-        return
-
-    game_id = f"{message.chat.id}_{message.message_id}"
-    active_dice_games[game_id] = {
-        "initiator_username": initiator_username,
-        "target_username": target_username,
-    }
-
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Принять", callback_data=f"cubes_accept:{game_id}")
-    builder.button(text="❌ Отказать", callback_data=f"cubes_decline:{game_id}")
-
-    await message.answer(
-        f"@{target_username} минуточку внимания!\n"
-        f"@{initiator_username} предлагает вам бросить кубики.",
-        reply_markup=builder.as_markup(),
-    )
-
-
-@router.callback_query(F.data.startswith("cubes_decline:"))
-async def cb_cubes_decline(callback: CallbackQuery):
-    game_id = callback.data.split(":", 1)[1]
-    game = active_dice_games.get(game_id)
-    if not game:
-        await callback.answer("Игра не найдена.", show_alert=True)
-        return
-
-    responder_username = callback.from_user.username or ""
-    if responder_username.lower() != game["target_username"].lower():
-        await callback.answer("Это предложение не для вас.", show_alert=True)
-        return
-
-    await callback.message.edit_text(
-        f"@{game['initiator_username']} минуточку внимания! "
-        f"@{game['target_username']} отказался бросить кубики."
-    )
-    active_dice_games.pop(game_id, None)
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("cubes_accept:"))
-async def cb_cubes_accept(callback: CallbackQuery):
-    game_id = callback.data.split(":", 1)[1]
-    game = active_dice_games.get(game_id)
-    if not game:
-        await callback.answer("Игра не найдена.", show_alert=True)
-        return
-
-    responder_username = callback.from_user.username or ""
-    if responder_username.lower() != game["target_username"].lower():
-        await callback.answer("Это предложение не для вас.", show_alert=True)
-        return
-
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.answer()
-
-    target_username = game["target_username"]
-    initiator_username = game["initiator_username"]
-
-    await callback.message.answer(f"Первый бросок кубика совершает @{target_username}.")
-    first_roll = random.randint(1, 6)
-    await callback.message.answer(f"🎲 {first_roll}")
-
-    await callback.message.answer(f"Второй бросок кубика совершает @{initiator_username}.")
-    second_roll = random.randint(1, 6)
-    await callback.message.answer(f"🎲 {second_roll}")
-
-    if first_roll == second_roll:
-        await callback.message.answer(f"Игроки бросили кубики.\nНичья! Оба выбросили {first_roll}.")
-    else:
-        if first_roll > second_roll:
-            winner, loser = target_username, initiator_username
-        else:
-            winner, loser = initiator_username, target_username
-        await callback.message.answer(
-            "Игроки бросили кубики.\n"
-            f"👑 Победитель – @{winner}\n"
-            f"✖ Проигравший – @{loser}"
+@router.message(PrefixCommand("createtheme", "создатьтему", "создать_тему"))
+async def cmd_createtheme(message: Message, command: str, args: str):
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+        await message.answer(
+            "Использование: /createtheme название суть_темы\n"
+            "Пример: /createtheme Программирование Обсуждение языков, библиотек и проектов."
         )
-
-    active_dice_games.pop(game_id, None)
-
-
-@router.message(Command("passcreate"))
-async def cmd_passcreate(message: Message):
-    if message.from_user.id != OWNER_ID:
-        await message.answer(NO_RIGHTS_TEXT)
         return
 
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Использование: /passcreate текст [@username | @all]")
-        return
-
-    code = parts[1].strip()
-
-    if len(parts) > 2:
-        target = parts[2].strip().lower()
-        if target == "@all":
-            codes = await get_codes()
-            codes[code] = {"username": "", "used": False, "global": True}
-            await save_codes(codes)
-            await message.answer(f"✅ **Глобальный** промокод \"{code}\" создан для **всех пользователей**.")
-            return
-
-    if len(parts) < 3 or not parts[2].strip().startswith("@"):
-        await message.answer("Использование: /passcreate текст [@username | @all]")
-        return
-
-    username = parts[2].strip().lstrip("@")
-    codes = await get_codes()
-    codes[code] = {"username": username, "used": False}
-    await save_codes(codes)
-    await message.answer(f"✅ Промокод \"{code}\" создан для @{username}.")
-
-
-@router.message(Command("pickup"))
-async def cmd_pickup(message: Message):
-    if message.from_user.id != OWNER_ID:
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip().startswith("@"):
-        await message.answer("Использование: /pickup @username")
-        return
-    username = parts[1].strip().lstrip("@")
-    found = await find_user_by_username(username)
-    if not found:
-        await message.answer("❌ Пользователь не найден.")
-        return
-    uid, _info = found
-    await set_rank(int(uid), RANK_UNVERIFIED)
-    await message.answer(f"✅ У @{username} забрана верификация.")
-
-
-@router.message(Command(commands=["search"]))
-async def cmd_search(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Укажите текст для поиска: /search ваш запрос")
-        return
-
-    query = parts[1].strip()
-    encoded_query = urllib.parse.quote(query)
-    yandex_url = f"https://yandex.ru/search/?text={encoded_query}"
-    await message.answer(f"🔍 Поиск в Яндексе:\n{yandex_url}", disable_web_page_preview=True)
-
-
-@router.message(Command(commands=["botinfo"]))
-async def cmd_botinfo(message: Message):
-    await ensure_user(message.from_user.id, message.from_user.username)
-    await message.answer(BOTINFO_TEXT)
-
-
-@router.message(Command("createtheme"))
-async def cmd_createtheme(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3 or not parts[1].strip() or not parts[2].strip():
-        await message.answer("Использование: /createtheme название суть_темы\nПример: /createtheme Программирование Обсуждение языков, библиотек и проектов.")
-        return
-
-    title = parts[1].strip()
-    description = parts[2].strip()
+    title = parts[0].strip()
+    description = parts[1].strip()
 
     themes_data = await get_themes()
     theme_id = str(themes_data["next_id"])
@@ -656,21 +104,21 @@ async def cmd_createtheme(message: Message):
         "title": title,
         "description": description,
         "creator_id": message.from_user.id,
-        "creator_username": message.from_user.username or str(message.from_user.id)
+        "creator_username": message.from_user.username or str(message.from_user.id),
     }
     themes_data["next_id"] += 1
     await save_themes(themes_data)
 
-    await message.answer(f"✅ Тема создана!\nID: {theme_id}\nНазвание: {title}\nСуть: {description}")
+    await message.answer(
+        f"✅ Тема создана!\n"
+        f"ID: {theme_id}\n"
+        f"Название: {title}\n"
+        f"Суть: {description}"
+    )
 
 
-@router.message(Command("themes"))
-async def cmd_themes(message: Message):
-    rank = await get_rank(message.from_user.id)
-    if rank not in (RANK_VERIFIED, RANK_OWNER):
-        await message.answer(NO_RIGHTS_TEXT)
-        return
-
+@router.message(PrefixCommand("themes", "темы"))
+async def cmd_themes(message: Message, command: str, args: str):
     themes_data = await get_themes()
     themes = themes_data.get("themes", {})
 
@@ -680,7 +128,7 @@ async def cmd_themes(message: Message):
 
     lines = ["📋 Список тем:\n"]
     for tid, info in sorted(themes.items(), key=lambda x: int(x[0])):
-        creator = f"@{info['creator_username']}" if info.get('creator_username') else "Неизвестно"
+        creator = f"@{info['creator_username']}" if info.get("creator_username") else "Неизвестно"
         lines.append(f"🆔 ID: {tid}")
         lines.append(f"📌 Название: {info['title']}")
         lines.append(f"📝 Суть: {info['description']}")
@@ -690,20 +138,18 @@ async def cmd_themes(message: Message):
     await message.answer("\n".join(lines))
 
 
-@router.message(Command("removetheme"))
-async def cmd_removetheme(message: Message):
+@router.message(PrefixCommand("deletetheme", "удалитьтему", "удалить_тему", "removetheme"))
+async def cmd_deletetheme(message: Message, command: str, args: str):
     if message.from_user.id != OWNER_ID:
-        await message.answer(NO_RIGHTS_TEXT)
+        await message.answer("Вы не можете выполнить эту команду.")
         return
 
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Использование: /removetheme айди_темы")
+    theme_id = args.strip()
+    if not theme_id:
+        await message.answer("Использование: /deletetheme айди_темы")
         return
 
-    theme_id = parts[1].strip()
     themes_data = await get_themes()
-
     if theme_id not in themes_data.get("themes", {}):
         await message.answer("❌ Тема с таким ID не найдена.")
         return
@@ -711,52 +157,6 @@ async def cmd_removetheme(message: Message):
     del themes_data["themes"][theme_id]
     await save_themes(themes_data)
     await message.answer(f"✅ Тема с ID {theme_id} удалена.")
-
-
-@router.inline_query()
-async def inline_handler(inline_query: InlineQuery):
-    query = (inline_query.query or "").strip().lower()
-    results = []
-
-    if not query or "бот" in query or "инфо" in query or "bot" in query:
-        results.append(
-            InlineQueryResultArticle(
-                id="botinfo",
-                title="Бот инфо",
-                description="Бот инфо.",
-                input_message_content=InputTextMessageContent(message_text=BOTINFO_INLINE_TEXT),
-            )
-        )
-
-    if not query or "сайт" in query or "site" in query:
-        results.append(
-            InlineQueryResultArticle(
-                id="site",
-                title="Сайт",
-                description="Сайт",
-                input_message_content=InputTextMessageContent(message_text=SITE_TEXT),
-            )
-        )
-
-    if not results:
-        results.append(
-            InlineQueryResultArticle(
-                id="botinfo",
-                title="Бот инфо",
-                description="Бот инфо.",
-                input_message_content=InputTextMessageContent(message_text=BOTINFO_INLINE_TEXT),
-            )
-        )
-        results.append(
-            InlineQueryResultArticle(
-                id="site",
-                title="Сайт",
-                description="Сайт",
-                input_message_content=InputTextMessageContent(message_text=SITE_TEXT),
-            )
-        )
-
-    await inline_query.answer(results, cache_time=1, is_personal=True)
 
 
 async def main():
