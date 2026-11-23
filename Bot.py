@@ -85,7 +85,12 @@ SITE_TEXT = f"🖥 Наш сайт: {SITE_URL}"
 
 @router.message(PrefixCommand("start"))
 async def cmd_start(message: Message, command: str, args: str):
-    await message.answer("👋Приветствую!\nЭтот бот – перенос сайта «ЛюксоГрам.»")
+    await message.answer("👋Приветствую!\nЭтот бот – перенос сайта «ЛюксоГрам. /help для полного достцпа команд.»")
+    
+    
+@router.message(PrefixCommand("help"))
+async def cmd_start(message: Message, command: str, args: str):
+    await message.answer("Все команды:\n Темы – список тем.\n Создать тему название суть.")
 
 
 @router.message(PrefixCommand("site", "сайт"))
