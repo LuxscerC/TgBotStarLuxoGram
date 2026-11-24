@@ -7,8 +7,8 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
-BOT_TOKEN = "8958756913:AAGmg1dSvpDxF-5xB0tOimOk_OdeD9kyOeI"
-OWNER_ID = "7090228036"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 SITE_URL = os.environ.get("SITE_URL", "https://starluxogram.site/")
 
 try:
@@ -86,10 +86,10 @@ SITE_TEXT = f"🖥 Наш сайт: {SITE_URL}"
 @router.message(PrefixCommand("start"))
 async def cmd_start(message: Message, command: str, args: str):
     await message.answer("👋Приветствую!\nЭтот бот – перенос сайта «ЛюксоГрам. /help для полного достцпа команд.»")
-    
-    
+
+
 @router.message(PrefixCommand("help"))
-async def cmd_start(message: Message, command: str, args: str):
+async def cmd_help(message: Message, command: str, args: str):
     await message.answer("Все команды:\n .Темы – список тем.\n .Создать тему название суть.")
 
 
