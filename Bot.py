@@ -110,23 +110,27 @@ async def cmd_createtheme(message: Message, command: str, args: str):
 
     title = parts[0].strip()
     description = parts[1].strip()
+    creator_id = message.from_user.id
+    creator_username = message.from_user.username
 
     themes_data = await get_themes()
     theme_id = str(themes_data["next_id"])
     themes_data["themes"][theme_id] = {
         "title": title,
         "description": description,
-        "creator_id": message.from_user.id,
-        "creator_username": message.from_user.username or str(message.from_user.id),
+        "creator_id": creator_id,
+        "creator_username": creator_username,
     }
     themes_data["next_id"] += 1
     await save_themes(themes_data)
 
+    username_str = f"@{creator_username}" if creator_username else "без юзернейма"
     await message.answer(
         f"✅ Тема создана!\n"
         f"ID: {theme_id}\n"
         f"Название: {title}\n"
-        f"Суть: {description}"
+        f"Суть: {description}\n"
+        f"Создатель: {username_str} (ID: {creator_id})"
     )
 
 
@@ -141,7 +145,12 @@ async def cmd_themes(message: Message, command: str, args: str):
 
     lines = ["📋 Список тем:\n"]
     for tid, info in sorted(themes.items(), key=lambda x: int(x[0])):
-        creator = f"@{info['creator_username']}" if info.get("creator_username") else "Неизвестно"
+        creator_id = info.get("creator_id", "—")
+        username = info.get("creator_username")
+        if username:
+            creator = f"@{username} (ID: {creator_id})"
+        else:
+            creator = f"ID: {creator_id}"
         lines.append(f"🆔 ID: {tid}")
         lines.append(f"📌 Название: {info['title']}")
         lines.append(f"📝 Суть: {info['description']}")
